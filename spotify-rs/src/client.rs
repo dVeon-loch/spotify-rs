@@ -4,18 +4,15 @@ use std::{
 };
 
 use oauth2::{
-    basic::{
-        BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
-        BasicTokenType,
-    },
-    reqwest::async_http_client,
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl,
-    RefreshToken, StandardRevocableToken, TokenUrl,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, RedirectUrl, RefreshToken, StandardRevocableToken, TokenUrl,
+    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse},
+    http::header::CONTENT_LENGTH,
 };
-use reqwest::{header::CONTENT_LENGTH, Method, Url};
+use reqwest::{Method, Url};
 use serde::{
-    de::{value::BytesDeserializer, DeserializeOwned, IntoDeserializer},
     Serialize,
+    de::{DeserializeOwned, IntoDeserializer, value::BytesDeserializer},
 };
 use tracing::info;
 
@@ -31,13 +28,25 @@ const AUTHORISATION_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 pub(crate) const API_URL: &str = "https://api.spotify.com/v1";
 
-pub(crate) type OAuthClient = oauth2::Client<
+pub(crate) type FreshOAuthClient = oauth2::Client<
     BasicErrorResponse,
     Token,
-    BasicTokenType,
     BasicTokenIntrospectionResponse,
     StandardRevocableToken,
     BasicRevocationErrorResponse,
+>;
+
+pub(crate) type EndpointSetOAuthClient = oauth2::Client<
+    BasicErrorResponse,
+    Token,
+    BasicTokenIntrospectionResponse,
+    StandardRevocableToken,
+    BasicRevocationErrorResponse,
+    EndpointSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointNotSet,
+    EndpointSet,
 >;
 
 /// A client created using the Authorisation Code Flow.
@@ -74,9 +83,9 @@ pub struct Client<A: AuthenticationState, F: AuthFlow> {
     // authorisation flows, as well as hold the CSRF/PKCE verifiers.
     pub(crate) auth_flow: F,
     // The OAuth2 client.
-    pub(crate) oauth: OAuthClient,
+    pub(crate) oauth_client: EndpointSetOAuthClient,
     // The HTTP client.
-    pub(crate) http: reqwest::Client,
+    pub(crate) http_client: oauth2::reqwest::Client,
 }
 
 impl Client<Token, UnknownFlow> {
@@ -91,14 +100,19 @@ impl Client<Token, UnknownFlow> {
         refresh_token: String,
     ) -> Result<Self> {
         let client_id = ClientId::new(client_id.into());
-        let client_secret = client_secret.map(|s| ClientSecret::new(s.to_owned()));
 
-        let oauth_client = OAuthClient::new(
-            client_id,
-            client_secret,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        );
+        let oauth_client = {
+            if let Some(client_secret) = client_secret {
+                FreshOAuthClient::new(client_id)
+                    .set_client_secret(ClientSecret::new(client_secret.to_owned()))
+                    .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+                    .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap())
+            } else {
+                FreshOAuthClient::new(client_id)
+                    .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+                    .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap())
+            }
+        };
 
         let refresh_token = RefreshToken::new(refresh_token);
         let mut req = oauth_client.exchange_refresh_token(&refresh_token);
@@ -107,7 +121,11 @@ impl Client<Token, UnknownFlow> {
             req = req.add_scopes(scopes.0);
         }
 
-        let mut token = req.request_async(async_http_client).await?.set_timestamps();
+        // Need to use the oauth2 version of reqwest::Client as it implements the AsyncHttpClient trait
+        let http_client = oauth2::reqwest::Client::new();
+
+        let mut token: Token = req.request_async(&http_client).await?.set_timestamps();
+
         if token.refresh_token.is_none() {
             // "When a refresh token is not returned, continue using the existing token."
             // https://developer.spotify.com/documentation/web-api/tutorials/refreshing-tokens
@@ -118,8 +136,8 @@ impl Client<Token, UnknownFlow> {
             auto_refresh,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow: UnknownFlow,
-            oauth: oauth_client,
-            http: reqwest::Client::new(),
+            oauth_client,
+            http_client,
         })
     }
 }
@@ -179,9 +197,9 @@ impl<F: AuthFlow> Client<Token, F> {
         };
 
         let token = self
-            .oauth
+            .oauth_client
             .exchange_refresh_token(&refresh_token)
-            .request_async(async_http_client)
+            .request_async(&self.http_client)
             .await?
             .set_timestamps();
 
@@ -220,7 +238,10 @@ impl<F: AuthFlow> Client<Token, F> {
                     .read()
                     .expect("The lock holding the token has been poisoned.");
 
-                info!("The token has been successfully refreshed. The new token will expire in {} seconds", lock.expires_in);
+                info!(
+                    "The token has been successfully refreshed. The new token will expire in {} seconds",
+                    lock.expires_in
+                );
             } else {
                 info!("The token has expired, automatic refresh is disabled.");
                 return Err(Error::ExpiredToken);
@@ -228,7 +249,7 @@ impl<F: AuthFlow> Client<Token, F> {
         }
 
         let mut req = {
-            self.http
+            self.http_client
                 .request(method, format!("{API_URL}{endpoint}"))
                 .bearer_auth(secret)
         };
@@ -252,7 +273,7 @@ impl<F: AuthFlow> Client<Token, F> {
         let req = req.build()?;
         info!(headers = ?req.headers(), "{} request sent to {}", req.method(), req.url());
 
-        let res = self.http.execute(req).await?;
+        let res = self.http_client.execute(req).await?;
 
         if res.status().is_success() {
             let bytes = res.bytes().await?;
@@ -340,20 +361,18 @@ impl AuthCodeClient<Unauthenticated> {
         scopes: S,
         redirect_uri: RedirectUrl,
         auto_refresh: bool,
-    ) -> (Self, Url)
+    ) -> (Self, Url, CsrfToken)
     where
         S: Into<Scopes>,
     {
         let client_id = ClientId::new(client_id.into());
-        let client_secret = Some(ClientSecret::new(client_secret.into()));
+        let client_secret = ClientSecret::new(client_secret.into());
 
-        let oauth = OAuthClient::new(
-            client_id,
-            client_secret,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        )
-        .set_redirect_uri(redirect_uri);
+        let oauth = FreshOAuthClient::new(client_id)
+            .set_client_secret(client_secret)
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap())
+            .set_redirect_uri(redirect_uri);
 
         let (auth_url, csrf_token) = oauth
             .authorize_url(CsrfToken::new_random)
@@ -364,11 +383,14 @@ impl AuthCodeClient<Unauthenticated> {
             Client {
                 auto_refresh,
                 auth_state: Arc::new(RwLock::new(Unauthenticated)),
-                auth_flow: AuthCodeFlow { csrf_token },
-                oauth,
-                http: reqwest::Client::new(),
+                auth_flow: AuthCodeFlow {
+                    csrf_token: csrf_token.clone(),
+                },
+                oauth_client: oauth,
+                http_client: oauth2::reqwest::Client::new(),
             },
             auth_url,
+            csrf_token,
         )
     }
 
@@ -389,9 +411,9 @@ impl AuthCodeClient<Unauthenticated> {
         }
 
         let token = self
-            .oauth
+            .oauth_client
             .exchange_code(AuthorizationCode::new(auth_code))
-            .request_async(async_http_client)
+            .request_async(&self.http_client)
             .await?
             .set_timestamps();
 
@@ -399,8 +421,8 @@ impl AuthCodeClient<Unauthenticated> {
             auto_refresh: self.auto_refresh,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow: self.auth_flow,
-            oauth: self.oauth,
-            http: self.http,
+            oauth_client: self.oauth_client,
+            http_client: self.http_client,
         })
     }
 }
@@ -424,13 +446,10 @@ impl AuthCodePkceClient<Unauthenticated> {
     {
         let client_id = ClientId::new(client_id.into());
 
-        let oauth = OAuthClient::new(
-            client_id,
-            None,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        )
-        .set_redirect_uri(redirect_uri);
+        let oauth = FreshOAuthClient::new(client_id)
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap())
+            .set_redirect_uri(redirect_uri);
 
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
@@ -448,8 +467,8 @@ impl AuthCodePkceClient<Unauthenticated> {
                     csrf_token,
                     pkce_verifier: Some(pkce_verifier),
                 },
-                oauth,
-                http: reqwest::Client::new(),
+                oauth_client: oauth,
+                http_client: oauth2::reqwest::Client::new(),
             },
             auth_url,
         )
@@ -474,15 +493,15 @@ impl AuthCodePkceClient<Unauthenticated> {
         let Some(pkce_verifier) = self.auth_flow.pkce_verifier.take() else {
             // This should never be reached realistically, but an error
             // will be thrown and log issued just in case.
-            tracing::error!(client = ?self, "No PKCE code verifier present when authenticating the client.");
+            // tracing::error!(client = ?self, "No PKCE code verifier present when authenticating the client.");
             return Err(Error::InvalidClientState);
         };
 
         let token = self
-            .oauth
+            .oauth_client
             .exchange_code(AuthorizationCode::new(auth_code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(async_http_client)
+            .request_async(&self.http_client)
             .await?
             .set_timestamps();
 
@@ -490,8 +509,8 @@ impl AuthCodePkceClient<Unauthenticated> {
             auto_refresh: self.auto_refresh,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow: self.auth_flow,
-            oauth: self.oauth,
-            http: self.http,
+            oauth_client: self.oauth_client,
+            http_client: self.http_client,
         })
     }
 }
@@ -507,18 +526,17 @@ impl ClientCredsClient<Unauthenticated> {
         client_secret: impl Into<String>,
     ) -> Result<ClientCredsClient<Token>> {
         let client_id = ClientId::new(client_id.into());
-        let client_secret = Some(ClientSecret::new(client_secret.into()));
 
-        let oauth = OAuthClient::new(
-            client_id,
-            client_secret,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        );
+        let oauth = FreshOAuthClient::new(client_id)
+            .set_client_secret(ClientSecret::new(client_secret.into()))
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap());
+
+        let http_client = oauth2::reqwest::Client::new();
 
         let token = oauth
             .exchange_client_credentials()
-            .request_async(async_http_client)
+            .request_async(&http_client)
             .await?
             .set_timestamps();
 
@@ -526,8 +544,8 @@ impl ClientCredsClient<Unauthenticated> {
             auto_refresh: false,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow: ClientCredsFlow,
-            oauth,
-            http: reqwest::Client::new(),
+            oauth_client: oauth,
+            http_client,
         })
     }
 }
@@ -546,19 +564,16 @@ impl AuthCodeClient<Token> {
     ) -> Result<Self> {
         let client_id = ClientId::new(client_id.into());
         // client_secret.map(|s| ClientSecret::new(s.to_owned()));
-        let client_secret = Some(ClientSecret::new(client_secret.into()));
 
-        let oauth_client = OAuthClient::new(
-            client_id,
-            client_secret,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        );
+        let oauth_client = FreshOAuthClient::new(client_id)
+            .set_client_secret(ClientSecret::new(client_secret.into()))
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap());
 
-        let http = reqwest::Client::new();
+        let http_client = oauth2::reqwest::Client::new();
 
         // This is just a bogus request to check if the token is valid.
-        let res = http
+        let res = http_client
             .get(format!("{API_URL}/markets"))
             .bearer_auth(token.secret())
             .header(CONTENT_LENGTH, 0)
@@ -579,8 +594,8 @@ impl AuthCodeClient<Token> {
             auto_refresh,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow,
-            oauth: oauth_client,
-            http,
+            oauth_client,
+            http_client,
         })
     }
 }
@@ -598,17 +613,14 @@ impl AuthCodePkceClient<Token> {
     ) -> Result<Self> {
         let client_id = ClientId::new(client_id.into());
 
-        let oauth_client = OAuthClient::new(
-            client_id,
-            None,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        );
+        let oauth_client = FreshOAuthClient::new(client_id)
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap());
 
-        let http = reqwest::Client::new();
+        let http_client = oauth2::reqwest::Client::new();
 
         // This is just a bogus request to check if the token is valid.
-        let res = http
+        let res = http_client
             .get(format!("{API_URL}/recommendations/available-genre-seeds"))
             .bearer_auth(token.secret())
             .header(CONTENT_LENGTH, 0)
@@ -630,8 +642,8 @@ impl AuthCodePkceClient<Token> {
             auto_refresh,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow,
-            oauth: oauth_client,
-            http,
+            oauth_client,
+            http_client,
         })
     }
 }
@@ -648,19 +660,16 @@ impl ClientCredsClient<Token> {
         token: Token,
     ) -> Result<Self> {
         let client_id = ClientId::new(client_id.into());
-        let client_secret = Some(ClientSecret::new(client_secret.into()));
 
-        let oauth_client = OAuthClient::new(
-            client_id,
-            client_secret,
-            AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap(),
-            Some(TokenUrl::new(TOKEN_URL.to_owned()).unwrap()),
-        );
+        let oauth_client = FreshOAuthClient::new(client_id)
+            .set_client_secret(ClientSecret::new(client_secret.into()))
+            .set_auth_uri(AuthUrl::new(AUTHORISATION_URL.to_owned()).unwrap())
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_owned()).unwrap());
 
-        let http = reqwest::Client::new();
+        let http_client = oauth2::reqwest::Client::new();
 
         // This is just a bogus request to check if the token is valid.
-        let res = http
+        let res = http_client
             .get(format!("{API_URL}/recommendations/available-genre-seeds"))
             .bearer_auth(token.secret())
             .header(CONTENT_LENGTH, 0)
@@ -675,8 +684,8 @@ impl ClientCredsClient<Token> {
             auto_refresh: false,
             auth_state: Arc::new(RwLock::new(token)),
             auth_flow: ClientCredsFlow,
-            oauth: oauth_client,
-            http,
+            oauth_client,
+            http_client,
         })
     }
 }

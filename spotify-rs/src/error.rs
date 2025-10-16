@@ -1,4 +1,4 @@
-use oauth2::basic::BasicErrorResponseType;
+use oauth2::{HttpClientError, basic::BasicErrorResponseType};
 use serde::Deserialize;
 use snafu::prelude::*;
 
@@ -88,7 +88,7 @@ struct Details {
 
 // Error encountered when requesting an OAuth2 access token.
 type OauthError = oauth2::RequestTokenError<
-    oauth2::reqwest::Error<reqwest::Error>,
+    HttpClientError<oauth2::reqwest::Error>,
     oauth2::StandardErrorResponse<BasicErrorResponseType>,
 >;
 

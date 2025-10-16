@@ -2,7 +2,8 @@ use std::{collections::HashSet, fmt::Debug, time::Duration};
 
 use chrono::{DateTime, Utc};
 use oauth2::{
-    basic::BasicTokenType, AccessToken, CsrfToken, PkceCodeVerifier, RefreshToken, TokenResponse,
+    AccessToken, CsrfToken, PkceCodeVerifier, RefreshToken, TokenResponse, TokenType,
+    basic::BasicTokenType,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,7 +98,7 @@ impl Scopes {
 }
 
 /// An OAuth2 token.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Token {
     /// The token used for authenticating every single request.
     pub(crate) access_token: AccessToken,
@@ -236,7 +237,9 @@ impl Token {
     }
 }
 
-impl TokenResponse<BasicTokenType> for Token {
+impl TokenResponse for Token {
+    type TokenType = BasicTokenType;
+
     fn access_token(&self) -> &AccessToken {
         &self.access_token
     }
@@ -257,3 +260,5 @@ impl TokenResponse<BasicTokenType> for Token {
         self.scopes.as_ref()
     }
 }
+
+impl TokenType for Token {}
