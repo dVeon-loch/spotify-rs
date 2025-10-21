@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use spotify_rs_macros::docs;
 
 use crate::endpoint::user::FollowedArtistsEndpoint;
@@ -6,7 +6,7 @@ use crate::endpoint::user::FollowedArtistsEndpoint;
 use super::*;
 
 /// An artist.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[docs]
 pub struct Artist {
     pub external_urls: ExternalUrls,
@@ -27,7 +27,7 @@ pub struct Artist {
 /// A simplified artist, missing some details, that is usually obtained through
 /// endpoints not specific to artists. The `href` field may be used to get a\
 /// full artist.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[docs(name = "artist")]
 pub struct SimplifiedArtist {
     pub external_urls: ExternalUrls,

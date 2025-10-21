@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use crate::{
+    Error, Token,
     auth::AuthFlow,
     client::{self, Client},
     endpoint::Endpoint,
     error::Result,
-    Error, Token,
 };
-use serde::{de::DeserializeOwned, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 pub mod album;
 pub mod artist;
@@ -365,7 +365,7 @@ pub struct Cursor {
 }
 
 /// An image used in various contexts.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Image {
     /// The URL of the image.
     pub url: String,
@@ -385,14 +385,14 @@ pub struct Copyright {
 }
 
 /// A content restriction.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Restriction {
     /// The reason for the restriction.
     pub reason: RestrictionReason,
 }
 
 /// Contains known external IDs for content.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ExternalIds {
     /// The [International Standard Recording Code](https://en.wikipedia.org/wiki/International_Standard_Recording_Code)
     /// for the content.
@@ -407,7 +407,7 @@ pub struct ExternalIds {
 
 /// Contains external URLs for content. Currently, it seems that only Spotify
 /// URLs are included here.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ExternalUrls {
     /// The [Spotify URL](https://developer.spotify.com/documentation/web-api/concepts/spotify-uris-ids)
     /// for the content.
@@ -415,7 +415,7 @@ pub struct ExternalUrls {
 }
 
 /// Information about the followers of an artist, playlist or user.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Followers {
     /// This will always be set to null, as the Web API does not support it at the moment.
     pub href: Option<String>,
@@ -433,7 +433,7 @@ pub struct ResumePoint {
 }
 
 /// The reason for restriction on content.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RestrictionReason {
@@ -461,7 +461,7 @@ pub enum CopyrightType {
 }
 
 /// The precision with which a date is known.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DatePrecision {
     /// The date is known at the year level.

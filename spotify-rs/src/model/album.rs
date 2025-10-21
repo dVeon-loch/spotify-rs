@@ -42,7 +42,7 @@ pub struct Album {
 /// A simplified album, missing some details, that is usually obtained
 /// through endpoints not specific to albums. The `href` field may be
 /// used to get a full album.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[docs(name = "album")]
 pub struct SimplifiedAlbum {
     /// The type of the album.
@@ -93,7 +93,7 @@ pub(crate) struct PagedAlbums {
 // for consistency's sake. The aliases are because the docs say the album types
 // are lowercase, but they're uppercase too sometimes.
 /// The type of an album.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AlbumType {

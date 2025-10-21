@@ -88,6 +88,12 @@ pub struct Client<A: AuthenticationState, F: AuthFlow> {
     pub(crate) http_client: oauth2::reqwest::Client,
 }
 
+impl From<Token> for Client<Token, AuthCodeFlow> {
+    fn from(token: Token) -> Self {
+        todo!()
+    }
+}
+
 impl Client<Token, UnknownFlow> {
     /// Create a new authenticated and authorised client from a refresh token.
     ///

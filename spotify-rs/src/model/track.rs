@@ -5,7 +5,7 @@ use spotify_rs_macros::docs;
 use super::{album::SimplifiedAlbum, artist::SimplifiedArtist, *};
 
 /// A track.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[docs]
 pub struct Track {
     /// The album the track belongs to.
@@ -117,7 +117,7 @@ pub struct SavedTrack {
 
 /// Information about a track that's been
 /// [relinked](https://developer.spotify.com/documentation/web-api/concepts/track-relinking).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[docs(name = "track")]
 pub struct LinkedFrom {
     pub external_urls: ExternalUrls,
